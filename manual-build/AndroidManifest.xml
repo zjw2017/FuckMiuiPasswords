@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 手工构建（aapt2 直连）专用 manifest：package/version 属性 AGP8 不允许出现在源码 manifest 里。
+     模块声明走 META-INF/xposed/*（libxposed 新 API）；模块简介用 android:description（LSPosed 管理器展示） -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.zjw2017.fuckmiuipasswords"
+    android:versionCode="99"
+    android:versionName="0.9.9">
+
+    <uses-sdk
+        android:minSdkVersion="36"
+        android:targetSdkVersion="37" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:description="@string/app_details"
+        android:allowBackup="false" />
+</manifest>

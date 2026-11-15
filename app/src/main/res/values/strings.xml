@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FuckMiuiPasswords</string>
+    <string name="app_details">HyperOS 通行密钥绕过：伪造小米 assetlink 校验（asset_not_support），按应用改写 clientData origin（PASSKEY_ORIGIN_MISMATCH）</string>
+</resources>

@@ -1,0 +1,28 @@
+# ---- 构建产物 ----
+*.apk
+*.idsig
+manual-build/out/
+app/build/
+build/
+.gradle/
+
+# ---- 本机构建工具链（~550MB，不入库；重建用 manual-build/build.sh）----
+toolchain/
+
+# ---- 第三方依赖 jar（不入库；用 manual-build/fetch-libs.sh 拉取）----
+manual-build/libs/
+
+# ---- 临时/验证目录 ----
+apk_check/
+
+# ---- IDE ----
+.idea/
+*.iml
+local.properties
+
+# ---- 签名密钥（私钥不入库）----
+keystore/
+*.jks
+*.p12
+*.keystore
+    

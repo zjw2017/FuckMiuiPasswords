@@ -1,0 +1,34 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.github.zjw2017.fuckmiuipasswords'
+    compileSdk 37
+
+    defaultConfig {
+        applicationId "io.github.zjw2017.fuckmiuipasswords"
+        minSdk 36
+        targetSdk 37
+        versionCode 99
+        versionName "0.9.9"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    // libxposed 新 API（运行时由 LSPosed 框架提供，不打包）
+    compileOnly 'io.github.libxposed:api:102.0.0'
+    // HookTool Hook 框架（HChenX，LGPL-2.1）
+    implementation 'com.github.HChenX:HookTool:3.2.2'
+}
