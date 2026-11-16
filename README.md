@@ -17,12 +17,13 @@
 ⚠️ **登录 passkey 时模块必须保持启用**（断言签名覆盖 clientDataJSON，改写在 TEE 签名前，
 create/get 同一改写点，签名/响应/服务端校验三者一致）。
 
-## origin 策略（按调用方包名分组，`config/Config.java`）
+## origin 策略（按 RP 分支，`config/Config.java`）
 
-| 组 | 包名 | 处理 |
+| 分支 | 命中条件 | 处理 |
 |---|---|---|
-| web 源组 `WEB_ORIGIN_PACKAGES` | 官方 Telegram 三包（可继续加客户端） | origin → `https://telegram.org` |
-| 其它 App `OTHER_APPS_MODE` | 全部 | 保留 `android:apk-key-hash:`，编码修 base64url |
+| web 源组 `WEB_RPS` | **rpId** 命中（如 `telegram.org`） | origin → `https://<rpId>`——所有 Telegram 客户端（官方/X/Nekogram/第三方）rpId 相同，**免逐个配置** |
+| 包名兜底 `WEB_ORIGIN_PACKAGES` | rpId 提取失败时按包名 | origin → `https://telegram.org` |
+| 其它 App `OTHER_APPS_MODE` | 其余 | 保留 `android:apk-key-hash:`，编码修 base64url |
 
 ## 架构（v2.0，HookTool 范式）
 

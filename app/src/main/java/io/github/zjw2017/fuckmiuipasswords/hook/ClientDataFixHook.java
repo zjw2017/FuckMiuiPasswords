@@ -29,6 +29,9 @@ import java.util.Set;
  */
 public final class ClientDataFixHook {
 
+    /** rp 上下文：CarrierHook.before 从请求对象提取，同一调用链内的 hash-input 钩子复用 */
+    private static final ThreadLocal<String> RP_CONTEXT = new ThreadLocal<>();
+
     public static void install(String apkPath, ClassLoader classLoader) {
         if (!Config.ORIGIN_FIX_ENABLED) return;
 
@@ -86,10 +89,16 @@ public final class ClientDataFixHook {
     /** 载体出口：byte[] 字段里找出 clientDataJSON 与 32B hash，同步修复 */
     private static final class CarrierHook extends AbsHook {
         @Override
+        public void before() {
+            // 从请求对象提取 rpId（内部 hash 钩子先于本钩子 after 执行，靠它定策略）
+            RP_CONTEXT.set(OriginFix.findWebRpInObject(safeArg(0), 3));
+        }
+
+        @Override
         public void after() {
-            Object carrier = getResult();
-            if (carrier == null) return;
             try {
+                Object carrier = getResult();
+                if (carrier == null) return;
                 Field jsonField = null, hashField = null;
                 byte[] json = null;
                 for (Field f : carrier.getClass().getDeclaredFields()) {
@@ -105,7 +114,8 @@ public final class ClientDataFixHook {
                     }
                 }
                 if (json == null) return;
-                String fixed = OriginFix.fixClientData(new String(json, StandardCharsets.UTF_8));
+                String fixed = OriginFix.fixClientData(
+                        new String(json, StandardCharsets.UTF_8), RP_CONTEXT.get());
                 if (fixed == null) return;
                 byte[] fixedBytes = fixed.getBytes(StandardCharsets.UTF_8);
                 jsonField.set(carrier, fixedBytes);
@@ -114,18 +124,29 @@ public final class ClientDataFixHook {
                 }
             } catch (Throwable t) {
                 Log.e("fixCarrier err", t);
+            } finally {
+                RP_CONTEXT.remove();
+            }
+        }
+
+        private Object safeArg(int index) {
+            try {
+                return getArgs().length > index ? getArg(index) : null;
+            } catch (Throwable t) {
+                return null;
             }
         }
     }
 
-    /** 哈希入口：改写入参 JSON，保证哈希与载体一致（幂等） */
+    /** 哈希入口：改写入参 JSON，保证哈希与载体一致（幂等，策略沿用 rp 上下文） */
     private static final class HashInputHook extends AbsHook {
         @Override
         public void before() {
             Object arg = getArg(0);
             if (!(arg instanceof byte[])) return;
             byte[] bytes = (byte[]) arg;
-            String fixed = OriginFix.fixClientData(new String(bytes, StandardCharsets.UTF_8));
+            String fixed = OriginFix.fixClientData(
+                    new String(bytes, StandardCharsets.UTF_8), RP_CONTEXT.get());
             if (fixed != null) setArg(0, fixed.getBytes(StandardCharsets.UTF_8));
         }
     }

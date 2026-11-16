@@ -21,19 +21,25 @@ public final class Config {
     public static final boolean ORIGIN_FIX_ENABLED = true;
 
     /**
-     * 「web 源组」：这些包名的 origin 改写成 WEB_ORIGIN。
-     * Telegram 服务端只认 web 源（PASSKEY_ORIGIN_MISMATCH 对
-     * android:apk-key-hash 的两种 base64 编码都拒），加其它 Telegram
-     * 客户端时把包名追加进数组即可。
+     * 「web 源组」——按 RP 分支（推荐，第三方客户端免配置）：
+     * rpId 命中的请求，origin 改写成 https://&lt;rpId&gt;。
+     * 所有 Telegram 客户端（官方/X/Nekogram/第三方）创建的凭据
+     * rpId 都是 telegram.org，一处覆盖全家族。
+     */
+    public static final String[] WEB_RPS = {
+            "telegram.org",
+    };
+
+    /**
+     * 兜底：按包名分支（rpId 提取失败时使用）。
      */
     public static final String[] WEB_ORIGIN_PACKAGES = {
             "org.telegram.messenger",
             "org.telegram.messenger.web",
             "org.telegram.messenger.beta",
-            // "org.thunderdog.challegram",
     };
 
-    /** web 源组统一改写到的 origin */
+    /** 兜底路径统一改写到的 origin */
     public static final String WEB_ORIGIN = "https://telegram.org";
 
     /** 其它 App 的策略：保留 android:apk-key-hash: 形式，只修成规范 base64url */
