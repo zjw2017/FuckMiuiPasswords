@@ -17,132 +17,16 @@
 ⚠️ **登录 passkey 时模块必须保持启用**（断言签名覆盖 clientDataJSON，改写在 TEE 签名前，
 create/get 同一改写点，签名/响应/服务端校验三者一致）。
 
-## 小米 Passkey 创建与认证全流程（逆向实录）
+## 小米 Passkey 创建与认证全流程
 
-> 以下为 2026-11-16 于 HyperOS（com.miui.passwords 1.1.26 / com.fido.asm v220260331）
-> 实测逆向所得，含 APDU 级细节与真实报文样本。
+完整逆向实录见 **[docs/xiaomi-passkey-flow.md](docs/xiaomi-passkey-flow.md)**：
+创建/认证时序图、`pass/verify/assetlink` API 报文、clientDataJSON/authData 布局、
+TEE CTAP 级 APDU（getInfo/makeCredential/pksInfo）、packed→fmt:none 隐私降级、
+断言签名机制（origin 改写须在进 TEE 前的原理）、三进程地图、两道关卡速查。
 
-### 创建（注册）时序
-
-```
-App（Telegram / X / 任意）
-  │ ① CredentialManager.createCredential(options)          [androidx.credentials]
-  ▼
-系统凭据框架 com.android.credentialmanager
-  │ ② 查询全部 provider 的 begin 能力
-  │    ├ GMS  PasswordAndPasskeyService（Google）
-  │    └ 小米  XiaomiCredentialProviderService @ com.miui.passwords
-  │ ③ 弹出选择器（MiuiCredentialManager，type=PASSKEY）
-  ▼ 用户选「密码管理」
-FidoCredentialCreateActivity @ com.miui.passwords
-  │ ④ 以 action=com.xiaomi.credential.provider.FIDO_CREDENTIAL_CREATE 启动，
-  │    经 AIDL(org.fidoalliance.aidl.activity.CREDENTIAL_PROVIDER_OPERATION)
-  ▼ binder
-com.fido.asm（MiFido，包内含 Nok Nok UAF 框架）
-  │ ⑤ App 身份校验 ─── ★关卡一：服务端 RP 白名单
-  │ ⑥ ClientDataProcessor 组 clientDataJSON → SHA-256 → clientDataHash
-  ▼
-TEE FIDO TA（AAGUID: XMCTAP-000000002）
-  │ ⑦ makeCredential → packed attestation（小米 CA 证书链）
-  │    MiCloudKeyBoxService(passkeeper) 记录元数据——本地 TA，无服务端门槛
-  ▼
-com.fido.asm
-  │ ⑧ attestation 降级 fmt:"none"，组 registrationResponseJson
-  ▼ setResult 回传 → 框架 → App → RP 服务端
-  │ ⑨ RP 校验 challenge/type/rpIdHash/origin ─── ★关卡二：origin 白名单
-```
-
-### ⑤ App 身份校验（★关卡一）
-
-`i5.b`（AppAuthenticationManager）→ 先查内存缓存（TTL 180s）→ 未命中则：
-
-```
-POST https://api.account.xiaomi.com/pass/verify/assetlink
-form: rp=telegram.org
-      assetlinkUrlList=["https://telegram.org/.well-known/assetlinks.json", ...]
-      namespace=android_app | web
-      fingerprints=<调用方签名证书 SHA-256 冒号格式>
-      packageName=<调用方包名>
-      serialNo=<随机 UUID>
-→ {"code":0, ...}                            ← 通过
-→ {"code":210003, "desc":"asset_not_support",
-   "msg":"cannot be fount packagename:<pkg>"} ← 未注册（服务端 (rp, packageName) 库）
-```
-
-实测该库仅收录小米自家（account.xiaomi.com + com.xiaomi.account，报 `fingerprints not match`
-即代表已注册）；失败时 `p2.e`（VendorValidator）抛 `vendor validate failed : message=...`，
-`p2.c`（FacetIDsValidator）终结流程——本模块的 NetForge 伪造 + SHORT-CIRCUIT 就在这两层。
-
-### ⑥ clientDataJSON 与 origin
-
-`o2.b`（ClientDataProcessor）以 POJO `c3/k`{androidPackageName, challenge, origin, type} 序列化：
-
-```json
-{"androidPackageName":"com.twitter.android",
- "challenge":"<base64url>",
- "origin":"android:apk-key-hash:D9mgz7B7…LOL+k",   ← App 端：签名证书 SHA-256
- "type":"webauthn.create"}                          ← 或 "webauthn.get"
-```
-
-| 调用方 | origin 形态 | 备注 |
-|---|---|---|
-| Android App | `android:apk-key-hash:<指纹>` | 用**标准 Base64** 编码（非规范 base64url）|
-| 浏览器 | `https://` + rpId | 框架自带 link 格式（`o2.b.d()`）|
-
-随后 `o2.b.c()` 算 `clientDataHash = SHA-256(clientDataJSON)`，与请求一起进 TEE。
-
-### ⑦ TEE 交互（CTAP 风格 APDU，经 MiFido_TeeConnector）
-
-```
-0F 04                              → getInfo：FIDO_2_0 + credProtect/credBlob 等扩展
-0F 01 A6 {1:clientDataHash,        → makeCredential
-          2:{id:"telegram.org", name:"…"},
-          3:{id:"<userHandle>", name, displayName},
-          4:[{alg:-7(ES256)}, {alg:-257(RS256)}],
-          6:{sysTime, sysAccountId},
-          7:{rk:true, up:true}}
-        → 返回 packed attestation：authData + {alg:-7, sig, x5c:[XMCTAP-000000002 证书链]}
-0F 51                              → pksInfo：passkey 元数据记录（签名）
-```
-
-密钥对在 TEE 内生成；私钥不出 TA。密钥库走 `MiCloudKeyBoxService`
-（`miuikeybox.key.hardstore` 硬件主密钥 + MiKeyBoxTAService 本地 TA，云同步 E2EE，
-**无服务端准入校验**——因此本模块无需 hook com.miui.cloudservice）。
-
-### ⑧ 响应组装（含隐私降级）
-
-TEE 给的是带小米 CA 证书链的 packed attestation，ASM 输出前**降级**为 `fmt:"none"`：
-
-```
-attestationObject = {"fmt":"none", "attStmt":{}, "authData":<…>}
-registrationResponseJson = {
-  "id","rawId","type":"public-key","authenticatorAttachment":"platform",
-  "response":{"clientDataJSON","attestationObject","authenticatorData",
-              "publicKey"(SPKI), "publicKeyAlgorithm":-7,
-              "transports":["hybrid","internal"]},
-  "clientExtensionResults":{}}
-```
-
-authData 布局：`rpIdHash(32) | flags(1) | signCount(4) | [aaguid(16) | credIdLen(2) | credId | COSE key]`
-（flags 创建时 0x45=UP|UV|AT，认证时 0x05=UP|UV）。
-
-### 认证（登录）时序
-
-与创建同路径，差异仅在：
-- `o2.b.a()` 组 `type:"webauthn.get"` 的 clientData；TeeConnector 发 `getAssertion`
-- 响应 = `{clientDataJSON, authenticatorData, signature, userHandle}`
-- **signature = ES256(authData ‖ SHA-256(clientDataJSON))**——所以 origin 必须在
-  **进 TEE 之前**改写，否则服务端验签必挂（本模块的 ClientDataFixHook 即为此设计）
-- `userHandle` = 注册时的 user.id（Telegram 用它编 `datacenterId:userId` 做跨 DC 登录路由）
-- 服务端校验：challenge 匹配、type=webauthn.get、rpIdHash、UP/UV、**ES256 验签**、signCount 递增
-
-### 进程地图
-
-| 进程 | 角色 | 本模块 hook 价值 |
-|---|---|---|
-| `com.fido.asm` | 校验 + clientData + TEE + 响应组装 | **全部功能**（短路/伪造/源级 origin 改写）|
-| `com.miui.passwords` | Provider 入口 + FidoCredentialActivity + setResult 回传 | 仅排障 dump（三轮实测零功能贡献）|
-| `com.miui.cloudservice` | passkeeper/keybox（本地 TA + E2EE 云同步）| 无需（无服务端门槛）|
+一句话版：App → 凭据框架/选择器 → 密码管理 → **MiFido(com.fido.asm)**
+（①服务端 RP 白名单校验 → ②组 clientDataJSON → ③TEE 生成密钥/attestation）
+→ 降级 fmt:none 回传 → RP 校验（challenge/rpIdHash/origin/验签）。
 
 ## origin 策略（按调用方包名分组，`config/Config.java`）
 

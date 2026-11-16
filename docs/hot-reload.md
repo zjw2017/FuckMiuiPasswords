@@ -1,7 +1,5 @@
 # API 102 热重载
 
-设计参照 [hyperwave](https://github.com/leset0ng/hyperwave) 的 `docs/hot-reload.md`。
-
 ## 开关与触发
 
 `META-INF/xposed/module.prop` 用 `autoHotReload=true` 选择加入 APK 更新热重载。
