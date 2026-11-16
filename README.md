@@ -78,6 +78,12 @@ FuckMiuiPasswords: ORIGIN FIX(src)[com.twitter.android]: android:apk-key-hash:..
                                                 -> android:apk-key-hash:...-k
 ```
 
+## 热重载（API 102，免重启迭代）
+
+模块 APK 更新后新代码**自动**热替换进正在运行的目标进程（关键开关：
+`module.prop` 的 `autoHotReload=true`）。`bash manual-build/build.sh && adb install -r`
+即生效，无需强制停止。完整说明见 [docs/hot-reload.md](docs/hot-reload.md)。
+
 ## 如果还是失败
 
 1. **过了 vendor validate 又冒出新错误**：把 `NET <= ...` 日志里的接口 URL 加进

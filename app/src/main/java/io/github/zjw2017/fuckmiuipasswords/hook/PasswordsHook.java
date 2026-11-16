@@ -18,6 +18,10 @@ public class PasswordsHook extends AbsModule {
 
     @Override
     protected void onPackageReady(@NonNull XposedModuleInterface.PackageReadyParam param) {
+        register();
+    }
+
+    public void register() {
         NetForge.install();
         ResultDumpHook.install();
     }

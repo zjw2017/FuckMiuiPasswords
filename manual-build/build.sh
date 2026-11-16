@@ -13,7 +13,7 @@ BUILD="$ROOT/manual-build"
 LIBS="$BUILD/libs"
 OUT="$BUILD/out"
 
-# 编译 classpath：HookTool + libxposed api（compileOnly）+ 注解 + android.jar
+# 编译 classpath：HookTool + libxposed api（compileOnly）+ 注解
 CP="$ANDROID_JAR:$LIBS/HookTool-3.2.2-classes.jar:$LIBS/api-102.0.0-classes.jar:$LIBS/annotation-jvm-1.10.0.jar:$LIBS/annotations-13.0.jar"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
