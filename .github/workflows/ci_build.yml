@@ -1,0 +1,69 @@
+name: CI Build
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+  workflow_dispatch:
+
+jobs:
+  build_app:
+    runs-on: ubuntu-latest
+    name: Build App
+    env:
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+      KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+      ALIAS: ${{ secrets.ALIAS }}
+    steps:
+      - name: Checkout Git Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-overwrite-existing: true
+
+      - name: Create Sign File
+        run: |
+          echo "$SIGNING_KEY" | base64 --decode > key.jks
+          touch signing.properties
+          echo storePassword=$KEY_STORE_PASSWORD >> signing.properties
+          echo keyAlias=$ALIAS >> signing.properties
+          echo keyPassword=$KEY_STORE_PASSWORD >> signing.properties
+          echo storeFile=../key.jks >> signing.properties
+
+      - name: Build with Gradle
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          ./gradlew assembleRelease
+
+      - name: Find APKs
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/release -name '*.apk')
+          echo "APK_FILE=$APK_FILE" >> $GITHUB_ENV
+          echo "APK_FILE_NAME=$(basename $APK_FILE .apk)" >> $GITHUB_ENV
+
+      - name: Show APKs SHA256
+        if: success()
+        run: |
+          echo "### Build Success" >> $GITHUB_STEP_SUMMARY
+          echo "|Artifact|SHA256|" >> $GITHUB_STEP_SUMMARY
+          echo "|:---:|:---|" >> $GITHUB_STEP_SUMMARY
+          APK_SHA256=($(sha256sum ${{ env.APK_FILE }}))
+          echo "|Release|$APK_SHA256" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APK_FILE_NAME }}
+          path: ${{ env.APK_FILE }}
+          compression-level: 9

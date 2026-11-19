@@ -2,6 +2,14 @@ plugins {
     id 'com.android.application'
 }
 
+// 正式签名：仓库根 signing.properties（gitignored）+ key.jks。
+// 文件不存在时 debug 走默认调试钥、release 不签名（CI 的 Create Sign File 步骤负责写此文件）。
+def signFile = rootProject.file('signing.properties')
+def signProps = new Properties()
+if (signFile.exists()) {
+    signFile.withInputStream { signProps.load(it) }
+}
+
 android {
     namespace 'io.github.zjw2017.fuckmiuipasswords'
     compileSdk 37
@@ -14,14 +22,35 @@ android {
         versionName "1.0.2"
     }
 
+    signingConfigs {
+        if (signFile.exists()) {
+            create('release') {
+                storeFile file(signProps['storeFile'])
+                storePassword signProps['storePassword']
+                keyAlias signProps['keyAlias']
+                keyPassword signProps['keyPassword']
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21
     }
 
+    packaging {
+        dex {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (signFile.exists()) signingConfig signingConfigs.getByName('release')
+        }
+        debug {
+            if (signFile.exists()) signingConfig signingConfigs.getByName('release')
         }
     }
 }
@@ -31,4 +60,6 @@ dependencies {
     compileOnly 'io.github.libxposed:api:102.0.0'
     // HookTool Hook 框架（HChenX，LGPL-2.1）
     implementation 'com.github.HChenX:HookTool:3.2.2'
+    // @NonNull/@Nullable（HookTool API 表面用到）
+    compileOnly 'androidx.annotation:annotation:1.10.0'
 }

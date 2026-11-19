@@ -13,5 +13,5 @@ dependencyResolutionManagement {
         maven { url 'https://jitpack.io' }         // com.github.HChenX:HookTool
     }
 }
-rootProject.name = "fido-bypass"
+rootProject.name = "FuckMiuiPasswords"
 include ':app'
