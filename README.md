@@ -1,6 +1,6 @@
 # FuckMiuiPasswords —— HyperOS 小米密码管理 passkey 绕过 LSPosed 模块
 
-**状态：v2.0 实测通过 —— Telegram（web 源组）✅、X/com.twitter.android（apk-key-hash 组）✅**
+**状态：实测通过 —— Telegram（web 源组）✅、X/com.twitter.android（apk-key-hash 组）✅**
 
 基于 libxposed 新 API + [HookTool](https://github.com/HChenX/HookTool)（HChenX，LGPL-2.1）架构。
 
@@ -28,6 +28,17 @@ TEE CTAP 级 APDU（getInfo/makeCredential/pksInfo）、packed→fmt:none 隐私
 （①服务端 RP 白名单校验 → ②组 clientDataJSON → ③TEE 生成密钥/attestation）
 → 降级 fmt:none 回传 → RP 校验（challenge/rpIdHash/origin/验签）。
 
+## TOTP 云同步（动态令牌）
+
+完整逆向实录见 **[docs/xiaomi-totp-sync-flow.md](docs/xiaomi-totp-sync-flow.md)**：
+同步协议（Mi Cloud PDC）字段清单、syncExtensionStr 通道被服务器丢弃的探针实录、
+E2EE blob 钥匙栈（record key→AppKey→keybag/TA）、复合明文方案与四个 hook 定位表、
+清空语义与存量回灌、双机闭环实测记录。
+
+一句话版：密码管理同步默认**静默丢弃 TOTP 四列**（totpSecret/Algorithm/Issuer/Digits）；
+TotpSyncHook 把 TOTP 并入 E2EE 明文（`<长度>\n<json><密码>` 复合体）与密码同层同步——
+服务器只见密文，模块零密钥，编辑/删除/新增双向同步，两端装模块即闭环。
+
 ## origin 策略（按调用方包名分组，`config/Config.java`）
 
 | 组 | 包名 | 处理 |
@@ -35,7 +46,7 @@ TEE CTAP 级 APDU（getInfo/makeCredential/pksInfo）、packed→fmt:none 隐私
 | web 源组 `WEB_ORIGIN_PACKAGES` | 官方 Telegram 三包（可继续加客户端） | origin → `https://telegram.org` |
 | 其它 App `OTHER_APPS_MODE` | 全部 | 保留 `android:apk-key-hash:`，编码修 base64url |
 
-## 架构（v2.0，HookTool 范式）
+## 架构（HookTool 范式）
 
 ```
 FidoEntrance (ModuleEntrance)          生命周期分发
@@ -43,7 +54,8 @@ FidoEntrance (ModuleEntrance)          生命周期分发
 │   ├── net/NetForge                   URL.openConnection 动态挂连接类：伪造 assetlink + 探测日志
 │   ├── hook/VendorValidateHook        DexStringLocator 定位 p2.e，before→setResult 短路
 │   └── hook/ClientDataFixHook         源级改写 origin + 同步重算 SHA-256（carrier/hash-input 双钩）
-└── hook/PasswordsHook (AbsModule)     com.miui.passwords：排障
+└── hook/PasswordsHook (AbsModule)     com.miui.passwords
+    ├── hook/TotpSyncHook              TOTP 云同步桥：动态令牌并入 E2EE 明文随密码同步
     └── hook/ResultDumpHook            setResult 响应 dump + 事后兜底改写（幂等）
 util/OriginFix、util/DexStringLocator  origin 改写 / 常量串反查类（抗混淆）
 ```
@@ -69,10 +81,9 @@ HookTool 是 Java 21 字节码，34 的 d8 不认）。libxposed api 仅编译�
 
 1. `adb install -r FuckMiuiPasswords.apk`
 2. **LSPosed 管理器 → 模块 → 启用 FuckMiuiPasswords**，作用域勾选：
-   - `com.fido.asm`（**唯一必需**，全部功能 hook 都在这）
-   - `com.miui.passwords`（**不需要**——三轮实测证明功能贡献为零；
-     仅想观察响应原文时临时勾选看 ResultDump 日志）
-3. **重启手机**（模块为 libxposed 现代声明：`META-INF/xposed/*`，无经典 xposed meta-data）
+   - `com.fido.asm`（passkey 绕过的全部 hook 都在这）
+   - `com.miui.passwords`（**TOTP 云同步所需**）
+3. **重启手机**（模块为 libxposed 现代声明：`META-INF/xposed/*`）
 
 ## 实测结论（2026-11-16，三轮对照）
 
@@ -85,7 +96,19 @@ HookTool 是 Java 21 字节码，34 的 d8 不认）。libxposed api 仅编译�
 X 案例同时验证了"其它 App"分支：指纹含 `+`（`…LOL+k`）被修成 base64url（`…LOL-k`），
 且断言（登录）走同一源级改写点——签名覆盖改写后的 clientDataJSON，X 服务端验签通过。
 
-**判定：作用域收窄至 `com.fido.asm` 即可**（scope.list 已默认如此）。
+**判定：passkey 功能收窄至 `com.fido.asm` 即可**。
+
+### TOTP 云同步（2026-11-19，双机闭环）
+
+| 项目 | 结果 |
+|---|---|
+| 上传：源机 4 行 TOTP 重传（含测试期新增条目） | ✅ 复合明文随 record key 加密上云 |
+| 下载：接收机（密码管理 1.1.25） | ✅ 密钥/算法/位数 4/4 一一回填 |
+| UI 动态令牌出码 | ✅ 人工验证通过 |
+| 编辑 / 删除 / 新增语义 | ✅ 双向同步、删除对端清空、新增自动携带 |
+| syncExtensionStr 候选通道 | ❌ 探针实证被 PDC 服务器丢弃（详见文档第 2 节） |
+
+**判定：TOTP 同步需 `com.miui.passwords` 在作用域、且两端装模块**（scope.list 已含两者）。
 
 ## 验证
 
