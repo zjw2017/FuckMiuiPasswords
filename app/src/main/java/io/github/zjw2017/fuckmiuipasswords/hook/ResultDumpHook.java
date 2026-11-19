@@ -83,6 +83,7 @@ public final class ResultDumpHook extends AbsHook {
         sb.append('\n').append("  [").append(key).append("] = ").append(s);
     }
 
+    /** 反射常见取 Bundle 的 getter（getData/getExtras/getBundle/getCredentialData） */
     private static Bundle bundleGetter(Object v) {
         for (String m : new String[]{"getData", "getExtras", "getBundle", "getCredentialData"}) {
             try {

@@ -75,6 +75,7 @@ public final class ClientDataFixHook {
         }
     }
 
+    /** carrier 形态判别：字段全为 byte[] 的纯载体类（clientDataJSON + hash），按形态认出口、不依赖类名 */
     private static boolean hasOnlyByteArrayFields(Class<?> cls) {
         Field[] fs = cls.getDeclaredFields();
         if (fs.length == 0) return false;
@@ -101,6 +102,7 @@ public final class ClientDataFixHook {
                 if (carrier == null) return;
                 Field jsonField = null, hashField = null;
                 byte[] json = null;
+                // 按内容认字段：含 "\"origin\"" 的是 clientDataJSON，32 字节的是 SHA-256 hash
                 for (Field f : carrier.getClass().getDeclaredFields()) {
                     f.setAccessible(true);
                     byte[] v = (byte[]) f.get(carrier);

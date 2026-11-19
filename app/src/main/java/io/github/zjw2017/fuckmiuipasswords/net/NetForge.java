@@ -29,6 +29,7 @@ import java.util.Set;
  */
 public final class NetForge {
 
+    /** 已挂载的连接实现类——每个类只挂一次（实现类要到首次 openConnection 才揭晓） */
     private static final Set<Class<?>> HOOKED_CONN_CLASSES =
             Collections.synchronizedSet(new HashSet<>());
     private static final int MAX_LOG_BODY = 600;
@@ -109,6 +110,7 @@ public final class NetForge {
                 String url = safeUrl(getThisObject());
                 if (!Config.isInterestingUrl(url)) return;
                 try {
+                    // 缓冲响应体记日志后换新流返回，app 侧照常读到完整内容；64KB 上限防大响应拖死
                     InputStream in = (InputStream) r;
                     ByteArrayOutputStream bos = new ByteArrayOutputStream();
                     byte[] buf = new byte[4096];

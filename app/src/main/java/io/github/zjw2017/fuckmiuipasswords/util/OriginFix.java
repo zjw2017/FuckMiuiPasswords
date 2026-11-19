@@ -59,6 +59,8 @@ public final class OriginFix {
             return origin.startsWith("https://") ? null : Config.WEB_ORIGIN;
         }
         if ("base64url".equals(mode) && origin.startsWith("android:apk-key-hash:")) {
+            // apk-key-hash 要求无 padding 的 base64url；客户端给出的编码不规范时会被
+            // 严格校验拒，这里解码后重编码归一（幂等：已规范则返回 null 不动）
             String hash = origin.substring("android:apk-key-hash:".length());
             String out = "android:apk-key-hash:" + b64encodeUrlSafe(b64decode(hash));
             return out.equals(origin) ? null : out;
@@ -107,7 +109,7 @@ public final class OriginFix {
         return null;
     }
 
-    /** 从响应的 authenticatorData / attestationObject 字节里认 rpIdHash → rpId */
+    /** 从响应的 authenticatorData / attestationObject 字节里认 rpIdHash → rpId（WebAuthn 规定 rpIdHash = SHA-256(rpId)） */
     public static String detectWebRp(JSONObject response) {
         if (response == null) return null;
         for (String key : new String[]{"authenticatorData", "attestationObject"}) {
@@ -173,10 +175,12 @@ public final class OriginFix {
         if (extras == null) return;
         for (String key : extras.keySet()) {
             Object v = extras.get(key);
+            // 凭据响应对象(Parcelable)常把数据包在 Bundle 里，取不到就反射常见 getter 捞
             Bundle inner = (v instanceof Bundle) ? (Bundle) v : bundleGetter(v);
             if (inner == null) continue;
             for (String k : inner.keySet()) {
                 Object s = inner.get(k);
+                // 响应 JSON 串必含 "clientDataJSON" 特征，文本嗅探即可定位，不依赖类名
                 if (s instanceof String && ((String) s).contains("\"clientDataJSON\"")) {
                     String fixed = fixResponseJson((String) s);
                     if (fixed != null) inner.putString(k, fixed);
@@ -185,6 +189,7 @@ public final class OriginFix {
         }
     }
 
+    /** 反射常见取 Bundle 的 getter（getData/getExtras/getBundle/getCredentialData） */
     private static Bundle bundleGetter(Object v) {
         for (String m : new String[]{"getData", "getExtras", "getBundle", "getCredentialData"}) {
             try {
