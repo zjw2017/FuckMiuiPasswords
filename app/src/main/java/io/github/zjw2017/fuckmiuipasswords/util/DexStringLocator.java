@@ -26,16 +26,7 @@ public final class DexStringLocator {
         Set<String> result = new LinkedHashSet<>();
         byte[] needleBytes = needle.getBytes(StandardCharsets.UTF_8);
         try (ZipFile zip = new ZipFile(apkPath)) {
-            List<String> dexNames = new ArrayList<>();
-            Enumeration<? extends ZipEntry> en = zip.entries();
-            while (en.hasMoreElements()) {
-                String n = en.nextElement().getName();
-                if (n.equals("classes.dex") || (n.startsWith("classes") && n.endsWith(".dex"))) {
-                    dexNames.add(n);
-                }
-            }
-            Collections.sort(dexNames);
-            for (String n : dexNames) {
+            for (String n : listDexNames(zip)) {
                 ZipEntry e = zip.getEntry(n);
                 try (InputStream is = zip.getInputStream(e)) {
                     scanDex(readAll(is), needleBytes, result);
@@ -45,6 +36,42 @@ public final class DexStringLocator {
             Log.e("DexStringLocator io error", e);
         }
         return result;
+    }
+
+    /**
+     * 找出“方法字节码里 const-string 引用了某常量”的方法，返回 {@code 类名#方法名}。
+     * <p>
+     * 比 {@link #findClassesWithConstant} 细一级：一个类里可能有多个方法碰过
+     * 同一个常量（如 syncExtensionStr1 被序列化/反序列化/游标读写引用），
+     * 调用方按方法形态（参数/返回值）二次确认唯一目标。
+     */
+    public static Set<String> findMethodsWithConstant(String apkPath, String needle) {
+        Set<String> result = new LinkedHashSet<>();
+        byte[] needleBytes = needle.getBytes(StandardCharsets.UTF_8);
+        try (ZipFile zip = new ZipFile(apkPath)) {
+            for (String n : listDexNames(zip)) {
+                ZipEntry e = zip.getEntry(n);
+                try (InputStream is = zip.getInputStream(e)) {
+                    scanDexMethods(readAll(is), needleBytes, result);
+                }
+            }
+        } catch (IOException e) {
+            Log.e("DexStringLocator io error", e);
+        }
+        return result;
+    }
+
+    private static List<String> listDexNames(ZipFile zip) {
+        List<String> dexNames = new ArrayList<>();
+        Enumeration<? extends ZipEntry> en = zip.entries();
+        while (en.hasMoreElements()) {
+            String n = en.nextElement().getName();
+            if (n.equals("classes.dex") || (n.startsWith("classes") && n.endsWith(".dex"))) {
+                dexNames.add(n);
+            }
+        }
+        Collections.sort(dexNames);
+        return dexNames;
     }
 
     // -------------------- dex 解析 --------------------
@@ -101,6 +128,64 @@ public final class DexStringLocator {
             if (codeOff != 0 && codeReferences(dex, codeOff, target)) return true;
         }
         return false;
+    }
+
+    /** 方法级扫描：引用了目标常量的方法，输出 "类名#方法名" */
+    private static void scanDexMethods(byte[] dex, byte[] needle, Set<String> out) {
+        if (dex.length < 0x70) return;
+        int stringIdsSize = u4(dex, 0x38);
+        int stringIdsOff  = u4(dex, 0x3C);
+        int typeIdsOff    = u4(dex, 0x44);
+        int methodIdsOff  = u4(dex, 0x5C);
+        int classDefsSize = u4(dex, 0x60);
+        int classDefsOff  = u4(dex, 0x64);
+
+        // 1) 目标串的 string 索引集合
+        Set<Integer> target = new HashSet<>();
+        for (int i = 0; i < stringIdsSize; i++) {
+            int dataOff = u4(dex, stringIdsOff + 4 * i);
+            int[] pos = {dataOff};
+            readUleb(dex, pos);
+            int start = pos[0];
+            int end = start;
+            while (end < dex.length && dex[end] != 0) end++;
+            if (containsBytes(dex, start, end, needle)) target.add(i);
+        }
+        if (target.isEmpty()) return;
+
+        // 2) 每个类的 code 里找引用，并记下方法名（method_ids 每项 8 字节：u2 class, u2 proto, u4 name）
+        for (int k = 0; k < classDefsSize; k++) {
+            int base = classDefsOff + 32 * k;
+            int classIdx = u4(dex, base);
+            int classDataOff = u4(dex, base + 24);
+            if (classDataOff == 0) continue;
+
+            int[] pos = {classDataOff};
+            int staticFields   = readUleb(dex, pos);
+            int instanceFields = readUleb(dex, pos);
+            int directMethods  = readUleb(dex, pos);
+            int virtualMethods = readUleb(dex, pos);
+
+            skipFields(dex, pos, staticFields + instanceFields);
+
+            String clsName = typeToName(dex, stringIdsOff, typeIdsOff, classIdx);
+            methodsCollect(dex, pos, directMethods, target, methodIdsOff, stringIdsOff, clsName, out);
+            methodsCollect(dex, pos, virtualMethods, target, methodIdsOff, stringIdsOff, clsName, out);
+        }
+    }
+
+    private static void methodsCollect(byte[] dex, int[] pos, int count, Set<Integer> target,
+                                       int methodIdsOff, int stringIdsOff, String clsName, Set<String> out) {
+        int running = 0;
+        for (int m = 0; m < count; m++) {
+            running += readUleb(dex, pos);   // method_idx_diff（累计成绝对 method_idx）
+            readUleb(dex, pos);              // access_flags
+            int codeOff = readUleb(dex, pos);
+            if (codeOff != 0 && codeReferences(dex, codeOff, target)) {
+                int nameIdx = u4(dex, methodIdsOff + 8 * running + 4);
+                out.add(clsName + "#" + readMutf8(dex, stringIdsOff, nameIdx));
+            }
+        }
     }
 
     private static void skipFields(byte[] dex, int[] pos, int count) {

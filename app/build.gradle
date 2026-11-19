@@ -10,8 +10,8 @@ android {
         applicationId "io.github.zjw2017.fuckmiuipasswords"
         minSdk 36
         targetSdk 37
-        versionCode 101
-        versionName "1.0.1"
+        versionCode 102
+        versionName "1.0.2"
     }
 
     compileOptions {

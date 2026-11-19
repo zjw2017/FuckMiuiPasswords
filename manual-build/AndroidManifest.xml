@@ -3,8 +3,8 @@
      模块声明走 META-INF/xposed/*（libxposed 新 API）；模块简介用 android:description（LSPosed 管理器展示） -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.zjw2017.fuckmiuipasswords"
-    android:versionCode="101"
-    android:versionName="1.0.1">
+    android:versionCode="102"
+    android:versionName="1.0.2">
 
     <uses-sdk
         android:minSdkVersion="36"

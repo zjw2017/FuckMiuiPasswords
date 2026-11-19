@@ -64,7 +64,7 @@ public class FidoEntrance extends ModuleEntrance {
                 fidoAsmHook.register(apkPath, classLoader);
                 break;
             case "com.miui.passwords":
-                passwordsHook.register();
+                passwordsHook.register(apkPath, classLoader);
                 break;
             default:
                 break;

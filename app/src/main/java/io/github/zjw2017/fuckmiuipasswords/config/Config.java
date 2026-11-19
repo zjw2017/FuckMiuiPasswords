@@ -8,6 +8,17 @@ public final class Config {
     /** 主开关：在网络层伪造小米 pass/verify/assetlink 的响应 */
     public static final boolean FORGE_ASSETLINK_RESPONSE = true;
 
+    // ---------------- TOTP 云同步桥 ----------------
+
+    /** TOTP 云同步桥总开关（上传注入 + 下载回填 + 一次性存量标脏） */
+    public static final boolean SYNC_TOTP_ENABLED = true;
+
+    /** 抗混淆定位锚点：序列化 put / 解析 optString 处均引用该常量 */
+    public static final String EXT_STR_NEEDLE = "syncExtensionStr1";
+
+    /** password_record 表 URI（一次性 resync 标脏用） */
+    public static final String PASSWORD_RECORD_URI = "content://miui.autofill/password_record";
+
     /** 副开关：短路 vendor validate（DexStringLocator 定位后整体置空） */
     public static final boolean SHORT_CIRCUIT_VENDOR_VALIDATOR = true;
 
