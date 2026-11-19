@@ -32,12 +32,13 @@ TEE CTAP 级 APDU（getInfo/makeCredential/pksInfo）、packed→fmt:none 隐私
 
 完整逆向实录见 **[docs/xiaomi-totp-sync-flow.md](docs/xiaomi-totp-sync-flow.md)**：
 同步协议（Mi Cloud PDC）字段清单、syncExtensionStr 通道被服务器丢弃的探针实录、
-E2EE blob 钥匙栈（record key→AppKey→keybag/TA）、复合明文方案与四个 hook 定位表、
+E2EE blob 钥匙栈（record key→AppKey→keybag/TA）、独立信封方案（blob.t）与 hook 定位表、
 清空语义与存量回灌、双机闭环实测记录。
 
 一句话版：密码管理同步默认**静默丢弃 TOTP 四列**（totpSecret/Algorithm/Issuer/Digits）；
-TotpSyncHook 把 TOTP 并入 E2EE 明文（`<长度>\n<json><密码>` 复合体）与密码同层同步——
-服务器只见密文，模块零密钥，编辑/删除/新增双向同步，两端装模块即闭环。
+TotpSyncHook 把 TOTP 封成**独立的第二个 E2EE 信封**挂在 blob 的 `"t"` 键（复用官方
+j()/g() 封装机器，与密码同层同钥匙栈、模块零密钥）——服务器只见密文；**无模块/旧版
+客户端天然安全，密码明文全程纯净**；编辑/删除/新增双向同步，两端装模块即闭环。
 
 ## origin 策略（按调用方包名分组，`config/Config.java`）
 
@@ -55,7 +56,7 @@ FidoEntrance (ModuleEntrance)          生命周期分发
 │   ├── hook/VendorValidateHook        DexStringLocator 定位 p2.e，before→setResult 短路
 │   └── hook/ClientDataFixHook         源级改写 origin + 同步重算 SHA-256（carrier/hash-input 双钩）
 └── hook/PasswordsHook (AbsModule)     com.miui.passwords
-    ├── hook/TotpSyncHook              TOTP 云同步桥：动态令牌并入 E2EE 明文随密码同步
+    ├── hook/TotpSyncHook              TOTP 云同步桥：动态令牌独立 E2EE 信封（blob.t）随密码同步
     └── hook/ResultDumpHook            setResult 响应 dump + 事后兜底改写（幂等）
 util/OriginFix、util/DexStringLocator  origin 改写 / 常量串反查类（抗混淆）
 ```
@@ -102,11 +103,18 @@ X 案例同时验证了"其它 App"分支：指纹含 `+`（`…LOL+k`）被修�
 
 | 项目 | 结果 |
 |---|---|
-| 上传：源机 4 行 TOTP 重传（含测试期新增条目） | ✅ 复合明文随 record key 加密上云 |
-| 下载：接收机（密码管理 1.1.25） | ✅ 密钥/算法/位数 4/4 一一回填 |
+| 上传：源机 6 行 TOTP 标脏重传（含无 issuer 测试条目） | ✅ 6/6 注入 blob.t 信封，随 record key 加密上云 |
+| 下载：接收机（密码管理 1.1.25） | ✅ 6/6 解出回填（密钥/issuer/位数一一对应） |
 | UI 动态令牌出码 | ✅ 人工验证通过 |
-| 编辑 / 删除 / 新增语义 | ✅ 双向同步、删除对端清空、新增自动携带 |
+| 编辑 / 删除 / 新增语义 | ✅ 双向同步、删除对端清空、新增自动携带（复合明文轮次实测，信封同链路） |
 | syncExtensionStr 候选通道 | ❌ 探针实证被 PDC 服务器丢弃（详见文档第 2 节） |
+
+> 载体两代演进：复合明文（能同步，但无模块裸恢复会把 json 前缀污染进密码）
+> → **独立信封 blob.t（现行）**：TOTP 自成一个与密码同规格的 E2EE 信封挂在
+> blob 附加键上，无模块/旧版客户端原生忽略、密码全程纯净。信封版双机闭环
+> 复测通过（6/6）。⚠️ 早期信封构建的合成 Cursor 未定位（j() 直接读当前行抛
+> CursorIndexOutOfBounds），信封注入静默失败——已修复，旧构建传过裸 blob 的
+> 设备需按"如果还是失败"第 4 条重传一轮。
 
 **判定：TOTP 同步需 `com.miui.passwords` 在作用域、且两端装模块**（scope.list 已含两者）。
 
@@ -132,6 +140,10 @@ FuckMiuiPasswords: ORIGIN FIX(src)[com.twitter.android]: android:apk-key-hash:..
 2. **SHORT-CIRCUIT / clientData: no method matched**：目标 APK 升级改了结构，
    发 FuckMiuiPasswords 日志重新定位。
 3. **完全无日志**：LSPosed 里确认模块已启用 + 作用域已勾 + 已重启。
+4. **TOTP 没同步**：抓 `totp-sync` 日志定环节——缺 `upload 注入 blob.t 信封`
+   是上传侧、缺 `download 解出 TOTP` 是下载侧；装过早期信封构建（修复前）的
+   设备传过裸 blob 且行已同步（localStatus=-1）不会再传，把 TOTP 条目编辑一遍
+   触发重传，或删 `shared_prefs/fuckmiuipasswords_totp.xml` 后重启密码管理强制回灌。
 
 ## 已知边界
 
