@@ -21,9 +21,8 @@ import java.util.Set;
 /**
  * clientDataJSON.origin 改写 + base64 工具。
  * <p>
- * 判定优先按 RP（rpId 命中 {@link Config#WEB_RPS} → web 源），第三方客户端
- * （Nekogram/Telegram X/...）rpId 同为 telegram.org，免逐个配置；
- * rpId 不可用时回退按包名（{@link Config#WEB_ORIGIN_PACKAGES}）。
+ * 判定按 RP（rpId 命中 {@link Config#WEB_RPS} → web 源）；名单现空置——
+ * 2026-11-24 实测 X、Telegram 创建+登录均接受原生 android:apk-key-hash 源。
  * 其它 App 保留 android:apk-key-hash 并修 base64url 编码。
  * <p>
  * 两层使用：源级（ClientDataFixHook，TEE 签名前，登录断言签名一致）与
@@ -40,27 +39,18 @@ public final class OriginFix {
         return false;
     }
 
-    /** 按调用方包名决定兜底策略："web" | "base64url" | "none"（RP 判定优先于此） */
-    private static String packageMode(String pkg) {
-        return Config.originModeFor(pkg);
-    }
-
     /** 改写；返回 null = 无需改 */
-    public static String rewriteOrigin(String origin, String pkg, String rpId) {
+    public static String rewriteOrigin(String origin, String rpId) {
         if (origin == null || origin.isEmpty()) return null;
 
-        // 1) RP 分支（首选）
+        // 1) RP 分支：命中 WEB_RPS 的 RP 改写成 web 源（https://<rpId>）
         if (isWebRp(rpId)) {
             return origin.startsWith("https://") ? null : "https://" + rpId;
         }
-        // 2) 包名兜底
-        String mode = packageMode(pkg);
-        if ("web".equals(mode)) {
-            return origin.startsWith("https://") ? null : Config.WEB_ORIGIN;
-        }
-        if ("base64url".equals(mode) && origin.startsWith("android:apk-key-hash:")) {
-            // apk-key-hash 要求无 padding 的 base64url；客户端给出的编码不规范时会被
-            // 严格校验拒，这里解码后重编码归一（幂等：已规范则返回 null 不动）
+        // 2) 其它 App：保留 android:apk-key-hash，修成规范 base64url
+        //    （apk-key-hash 要求无 padding 的 base64url；幂等：已规范则返回 null 不动）
+        if (Config.ORIGIN_FIX_ENABLED && "base64url".equals(Config.OTHER_APPS_MODE)
+                && origin.startsWith("android:apk-key-hash:")) {
             String hash = origin.substring("android:apk-key-hash:".length());
             String out = "android:apk-key-hash:" + b64encodeUrlSafe(b64decode(hash));
             return out.equals(origin) ? null : out;
@@ -134,7 +124,7 @@ public final class OriginFix {
             JSONObject inner = new JSONObject(cjd);
             String pkg = inner.optString("androidPackageName", "");
             String oldOrigin = inner.optString("origin", "");
-            String newOrigin = rewriteOrigin(oldOrigin, pkg, rpId);
+            String newOrigin = rewriteOrigin(oldOrigin, rpId);
             if (newOrigin == null || newOrigin.equals(oldOrigin)) return null;
             inner.put("origin", newOrigin);
             Log.i("ORIGIN FIX(src)[" + pkg + ",rp=" + rpId + "]: " + oldOrigin
@@ -189,13 +179,19 @@ public final class OriginFix {
         }
     }
 
-    /** 反射常见取 Bundle 的 getter（getData/getExtras/getBundle/getCredentialData） */
+    /** 反射常见取 Bundle 的 getter（getData/getExtras/getBundle/getCredentialData）；
+     *  GetCredentialResponse→Credential→data 这类再往下一层也追（getCredential/getResponse） */
     private static Bundle bundleGetter(Object v) {
-        for (String m : new String[]{"getData", "getExtras", "getBundle", "getCredentialData"}) {
+        for (String m : new String[]{"getData", "getExtras", "getBundle", "getCredentialData",
+                "getCredential", "getResponse", "getCredentialResponse"}) {
             try {
                 Method mm = v.getClass().getMethod(m);
                 Object r = mm.invoke(v);
                 if (r instanceof Bundle) return (Bundle) r;
+                if (r != null && r != v && r.getClass().getClassLoader() != null) {
+                    Bundle inner = bundleGetter(r);
+                    if (inner != null) return inner;
+                }
             } catch (Throwable ignored) {}
         }
         return null;

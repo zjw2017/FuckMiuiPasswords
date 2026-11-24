@@ -16,8 +16,10 @@ import java.util.Map;
 /**
  * FuckMiuiPasswords 模块入口（libxposed / HookTool）。
  * <p>
- * HyperOS 小米密码管理 passkey 两道服务端/格式关卡的绕过：
- * asset_not_support（RP 白名单）与 PASSKEY_ORIGIN_MISMATCH（origin 只认 web 源）。
+ * HyperOS 小米密码管理 passkey 三道关卡的绕过：
+ * asset_not_support（服务端 RP 白名单，本地 DAL 闸门复刻）、origin 归一
+ * （X/TG 实测均收原生 apk-key-hash 源，web 改写名单已空置）、userHandle 自抹
+ * （MiFido setUserSelected 在 allowList 断言里丢 user，登录报错的真凶）。
  * 按目标包把生命周期分发给各功能单元；支持 API 102 热重载——
  * 模块 APK 更新后旧 Hook 由框架解除，本入口用保存的状态重放注册，
  * 无需 force-stop 目标进程。

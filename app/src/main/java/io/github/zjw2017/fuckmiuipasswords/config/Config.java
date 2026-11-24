@@ -32,26 +32,13 @@ public final class Config {
     public static final boolean ORIGIN_FIX_ENABLED = true;
 
     /**
-     * 「web 源组」——按 RP 分支（推荐，第三方客户端免配置）：
-     * rpId 命中的请求，origin 改写成 https://&lt;rpId&gt;。
-     * 所有 Telegram 客户端（官方/X/Nekogram/第三方）创建的凭据
-     * rpId 都是 telegram.org，一处覆盖全家族。
+     * 「web 源组」——rpId 命中的请求，origin 改写成 https://&lt;rpId&gt;。
+     * <p>
+     * 2026-11-24 实测：X、Telegram 创建与登录均接受原生 android:apk-key-hash
+     * 源（base64url 归一后），web 改写已无启用对象——机制保留给未来确有
+     * web-only 要求的 RP，名单空置。
      */
-    public static final String[] WEB_RPS = {
-            "telegram.org",
-    };
-
-    /**
-     * 兜底：按包名分支（rpId 提取失败时使用）。
-     */
-    public static final String[] WEB_ORIGIN_PACKAGES = {
-            "org.telegram.messenger",
-            "org.telegram.messenger.web",
-            "org.telegram.messenger.beta",
-    };
-
-    /** 兜底路径统一改写到的 origin */
-    public static final String WEB_ORIGIN = "https://telegram.org";
+    public static final String[] WEB_RPS = {};
 
     /** 其它 App 的策略：保留 android:apk-key-hash: 形式，只修成规范 base64url */
     public static final String OTHER_APPS_MODE = "base64url";   // "base64url" | "none"
@@ -59,6 +46,22 @@ public final class Config {
     /** 真机日志里观察到的服务端成功语义：code=0 即 trusted */
     public static final String FORGED_ASSETLINK_BODY =
             "{\"code\":0,\"desc\":\"\",\"clientCacheDurationMills\":180000}";
+
+    // ---------------- 关卡一本地闸门（伪造 code:0 之前的 (rp, 包名, 签名指纹) 校验） ----------------
+
+    /** 闸门模式取值 */
+    public static final String GATE_MODE_OFF = "off";        // 无条件放行（拆门，旧行为）
+    public static final String GATE_MODE_LOG = "log";        // 只校验记日志，仍放行（观察各调用方 DAL 裁决）
+    public static final String GATE_MODE_ENFORCE = "enforce"; // 不过就伪造拒绝
+
+    /**
+     * 闸门模式：核验 = 每次抓 RP 的 assetlinks.json 按 DAL 语义比对
+     * （get_login_creds + android_app + 包名 + 指纹），无静态白名单——
+     * 调用方换签名、RP 更新声明自动跟上，零配置维护。建议先 "log" 跑几天，
+     * 看 GATE 行确认各调用方都能过 DAL，再改 "enforce"。
+     * "off" = 无条件 code:0（谁都能借道，慎用）。
+     */
+    public static final String ASSETLINK_GATE_MODE = GATE_MODE_LOG;
 
     /** 短路定位常量串（p2.e.a 抛异常的 format 模板前缀） */
     public static final String VALIDATOR_NEEDLE = "vendor validate failed";
@@ -69,16 +72,8 @@ public final class Config {
     /** 源级 clientData 改写定位串（ClientDataProcessor 所在类） */
     public static final String CLIENT_DATA_NEEDLE = "webauthn.";
 
-    /** 按调用方包名决定 origin 策略："web" | "base64url" | "none" */
-    public static String originModeFor(String pkg) {
-        if (!ORIGIN_FIX_ENABLED) return "none";
-        if (pkg != null) {
-            for (String p : WEB_ORIGIN_PACKAGES) {
-                if (p.equals(pkg)) return "web";
-            }
-        }
-        return OTHER_APPS_MODE;
-    }
+    /** userHandle 保住钩定位串（PasskeyAuthenticator.setUserSelected 所在方法） */
+    public static final String USER_SELECTED_NEEDLE = "setUserSelected isDiscoverCredential:";
 
     /** 伪造规则表：URL 包含 key 就用对应 body 顶掉真实响应 */
     public static String forgeBodyFor(String url) {

@@ -1,6 +1,7 @@
 package io.github.zjw2017.fuckmiuipasswords.hook;
 
 import io.github.zjw2017.fuckmiuipasswords.config.Config;
+import io.github.zjw2017.fuckmiuipasswords.net.AssetlinkGate;
 import io.github.zjw2017.fuckmiuipasswords.util.DexStringLocator;
 import io.github.zjw2017.fuckmiuipasswords.util.Log;
 import com.hchen.hooktool.core.CoreTool;
@@ -14,15 +15,46 @@ import java.util.Set;
  * <p>
  * 定位不写死混淆名：常量串 {@link Config#VALIDATOR_NEEDLE} 反查持有类
  * （当前版本 = p2.e / VendorValidator），再按方法形态
- * {@code void xxx(String, String, String, boolean, ?)} 匹配后整体置空——
- * 成功路径本来也只是打一行日志返回，行为等价于校验通过。
+ * {@code void xxx(String, String, String, boolean, ?)} 匹配——入参即
+ * (rpId, packageName, certSha256, isBrowser, listener)（p2.c.a → p2.e.a
+ * 调用点实证）。整体置空 = 校验通过（成功路径本来也只是打一行日志返回）。
+ * <p>
+ * 短路前先过 {@link AssetlinkGate} 闸门：过了才置空；没过则放行原方法
+ * 跑完真实失败路径（POST → NetForge 伪造忠实拒绝体 → 原生
+ * "vendor validate failed : message=asset_not_support…serialNo=…" 异常），
+ * 拒批语义与真机完全一致。两层与 NetForge 共用同一闸门规则。
  */
 public final class VendorValidateHook extends AbsHook {
 
     @Override
     public void before() {
-        setResult(null);
-        Log.i("SHORT-CIRCUIT vendor validate");
+        String rp = strArg(0);
+        String pkg = strArg(1);
+        String fp = strArg(2);
+        if (rp == null || pkg == null) {
+            // 形态漂移认不出入参：按旧行为放行并报警（不影响可用性，排障后收紧）
+            Log.w("GATE: validate args unreadable（目标 APK 形态漂移?）按旧行为放行");
+            setResult(null);
+            return;
+        }
+        boolean isBrowser = getArg(3) instanceof Boolean && (Boolean) getArg(3);
+        int verdict = AssetlinkGate.check(rp, pkg, fp, null, isBrowser);
+        if (verdict == AssetlinkGate.PASS) {
+            setResult(null);
+            Log.i("SHORT-CIRCUIT vendor validate [gate PASS] rp=" + rp + " pkg=" + pkg);
+        } else {
+            // 不短路：原方法 POST → NetForge 闸门伪造拒绝 → 原生失败异常
+            Log.i("GATE DENY -> 走原生失败路径 rp=" + rp + " pkg=" + pkg + " fp=" + fp);
+        }
+    }
+
+    private String strArg(int index) {
+        try {
+            Object a = getArgs().length > index ? getArg(index) : null;
+            return a instanceof String ? (String) a : null;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 在目标 APK 里定位并注册 */

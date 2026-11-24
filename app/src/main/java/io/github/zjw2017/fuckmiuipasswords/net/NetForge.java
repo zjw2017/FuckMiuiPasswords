@@ -17,7 +17,9 @@ import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * 网络层：伪造小米 assetlink 校验响应 + 请求/响应探测日志。
@@ -26,12 +28,18 @@ import java.util.Set;
  * connect/getResponseCode/getOutputStream/getHeaderFields/getInputStream——
  * 不依赖目标 APK 任何混淆类名，okhttp/HttpURLConnectionImpl 皆可。
  * 命中 {@link Config#forgeBodyFor(String)} 的请求被完全架空（不联网也生效）。
+ * <p>
+ * assetlink 请求的伪造响应经 {@link AssetlinkGate} 闸门裁决：解析 POST 表单的
+ * (rp, packageName, fingerprints)，过了闸才给 code:0，否则伪造忠实失败体。
  */
 public final class NetForge {
 
     /** 已挂载的连接实现类——每个类只挂一次（实现类要到首次 openConnection 才揭晓） */
     private static final Set<Class<?>> HOOKED_CONN_CLASSES =
             Collections.synchronizedSet(new HashSet<>());
+    /** 伪造目标的请求体捕获：conn → 表单字节（getOutputStream 写入，getInputStream 裁决时取用） */
+    private static final Map<Object, ByteArrayOutputStream> REQ_BODIES =
+            Collections.synchronizedMap(new WeakHashMap<>());
     private static final int MAX_LOG_BODY = 600;
 
     public static void install() {
@@ -74,11 +82,17 @@ public final class NetForge {
             });
         }
 
-        // getOutputStream()：伪造目标把请求体丢进黑洞
+        // getOutputStream()：伪造目标把请求体收进捕获缓冲（闸门裁决要用）
         CoreTool.hookMethodIfExists(cls, "getOutputStream", new AbsHook() {
             @Override
             public void before() {
-                if (forgedUrl(getThisObject()) != null) setResult(new ByteArrayOutputStream());
+                if (forgedUrl(getThisObject()) != null) {
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    synchronized (REQ_BODIES) {
+                        REQ_BODIES.put(getThisObject(), bos);
+                    }
+                    setResult(bos);
+                }
             }
         });
 
@@ -96,9 +110,17 @@ public final class NetForge {
             public void before() {
                 String forge = forgedUrl(getThisObject());
                 if (forge != null) {
-                    Log.i("FORGE response <= " + describe(getThisObject()));
+                    String url = safeUrl(getThisObject());
+                    String reqBody = takeRequestBody(getThisObject());
+                    // assetlink 走闸门裁决（通过体 / 忠实失败体）；其它伪造目标用静态体
+                    String resp = (url != null && url.contains("/pass/verify/assetlink"))
+                            ? AssetlinkGate.forgeResponse(reqBody)
+                            : forge;
+                    Log.i("FORGE response <= " + describe(getThisObject())
+                            + " req=" + preview(reqBody == null ? new byte[0]
+                                    : reqBody.getBytes(StandardCharsets.UTF_8)));
                     setResult(new ByteArrayInputStream(
-                            Config.FORGED_ASSETLINK_BODY.getBytes(StandardCharsets.UTF_8)));
+                            resp.getBytes(StandardCharsets.UTF_8)));
                 }
             }
 
@@ -139,6 +161,14 @@ public final class NetForge {
     private static String forgedUrl(Object conn) {
         if (!Config.FORGE_ASSETLINK_RESPONSE) return null;
         return Config.forgeBodyFor(safeUrl(conn));
+    }
+
+    /** 取走该连接捕获的请求体（getOutputStream 时收进缓冲），无则 null */
+    private static String takeRequestBody(Object conn) {
+        synchronized (REQ_BODIES) {
+            ByteArrayOutputStream bos = REQ_BODIES.remove(conn);
+            return bos == null ? null : new String(bos.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 
     private static String safeUrl(Object conn) {
