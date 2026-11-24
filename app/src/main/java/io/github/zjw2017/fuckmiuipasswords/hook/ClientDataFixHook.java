@@ -14,7 +14,7 @@ import java.security.MessageDigest;
 import java.util.Set;
 
 /**
- * 源级改写 clientDataJSON.origin（第三道关：Telegram 只认 web 源）。
+ * 源级改写/归一 clientDataJSON.origin（TEE 签名前）。
  * <p>
  * 在 TEE 签名/哈希之前生效，响应里的 clientDataJSON、TEE 签名覆盖的
  * clientDataHash、服务端重算的 hash 三处保持一致——注册（fmt=none）与

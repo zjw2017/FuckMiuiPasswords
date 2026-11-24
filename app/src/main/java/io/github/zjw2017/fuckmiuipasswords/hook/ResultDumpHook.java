@@ -83,13 +83,19 @@ public final class ResultDumpHook extends AbsHook {
         sb.append('\n').append("  [").append(key).append("] = ").append(s);
     }
 
-    /** 反射常见取 Bundle 的 getter（getData/getExtras/getBundle/getCredentialData） */
+    /** 反射常见取 Bundle 的 getter（getData/getExtras/getBundle/getCredentialData）；
+     *  GetCredentialResponse→Credential→data 这类再往下一层也追 */
     private static Bundle bundleGetter(Object v) {
-        for (String m : new String[]{"getData", "getExtras", "getBundle", "getCredentialData"}) {
+        for (String m : new String[]{"getData", "getExtras", "getBundle", "getCredentialData",
+                "getCredential", "getResponse", "getCredentialResponse"}) {
             try {
                 java.lang.reflect.Method mm = v.getClass().getMethod(m);
                 Object r = mm.invoke(v);
                 if (r instanceof Bundle) return (Bundle) r;
+                if (r != null && r != v && r.getClass().getClassLoader() != null) {
+                    Bundle inner = bundleGetter(r);
+                    if (inner != null) return inner;
+                }
             } catch (Throwable ignored) {}
         }
         return null;

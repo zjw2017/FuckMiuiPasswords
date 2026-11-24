@@ -32,7 +32,8 @@ TEE FIDO TA（AAGUID: XMCTAP-000000002）
 com.fido.asm
   │ ⑧ attestation 降级 fmt:"none"，组 registrationResponseJson
   ▼ setResult 回传 → 框架 → App → RP 服务端
-  │ ⑨ RP 校验 challenge/type/rpIdHash/origin ─── ★关卡二：origin 白名单
+  │ ⑨ RP 校验 challenge/type/rpIdHash/origin/userHandle ─── ★关卡二：origin 白名单
+  │    （登录断言另有 ★关卡三：userHandle 被 setUserSelected 自抹，见 §6.1）
 ```
 
 ## 2. 关卡一：App 身份校验（RP 白名单）
@@ -57,7 +58,10 @@ form: rp=telegram.org
 `fingerprints not match` 即代表已注册、仅指纹不符）；Telegram、微信、X 等均不在库。
 
 失败时 `p2.e`（VendorValidator）抛出 `vendor validate failed : message=asset_not_support。serialNo=…`，
-`p2.c`（FacetIDsValidator）终结流程。**FuckMiuiPasswords 的 NetForge 伪造 + SHORT-CIRCUIT 正是切在这两层。**
+`p2.c`（FacetIDsValidator）终结流程。**FuckMiuiPasswords 的 NetForge 伪造 + SHORT-CIRCUIT 正是切在这两层**，
+且伪造前先过 AssetlinkGate 本地闸门——每次抓 RP 的 assetlinks.json 按 DAL 语义实时核验
+（get_login_creds + android_app + 包名 + 指纹，无静态白名单，换签名/更新声明自动跟上），
+只放行声明里的调用方，拒绝时伪造忠实失败体。
 
 ## 3. clientDataJSON 与 origin
 
@@ -80,9 +84,11 @@ form: rp=telegram.org
 | Android App | `android:apk-key-hash:<签名证书 SHA-256>` | **标准 Base64**（含 `+/`，非规范 base64url）|
 | 浏览器 | `https://` + rpId | 框架自带 link 格式（`o2.b.d()`）|
 
-**各 RP 的 origin 白名单策略自定**：X 等规范实现按 assetlinks 解码比对指纹（接受
-apk-key-hash）；Telegram 服务端硬编码只认 web 源（客户端是哑管道，源码已验证）——
-这就是 FuckMiuiPasswords 按 RP 分组改写的由来。
+**各 RP 的 origin 策略**（2026-11-24 复测修正）：X、Telegram 的创建与登录**均接受
+原生 `android:apk-key-hash` 源**（base64url 归一后），不需要 web 源改写。早期
+（11-15）「Telegram 只认 web 源、报 `PASSKEY_ORIGIN_MISMATCH`」的结论已被推翻
+——当时另一变量（userHandle 缺失，见 §6.1）未被识别。按 RP 分组改写机制保留
+（`WEB_RPS`/`WEB_ORIGIN_PACKAGES`），当前名单空置，供未来确有 web-only 要求的 RP 使用。
 
 ## 4. TEE 交互（CTAP 风格 APDU，经 MiFido_TeeConnector）
 
@@ -137,10 +143,27 @@ flags：创建 0x45 = UP|UV|AT；认证 0x05 = UP|UV
 - `o2.b.a()` 组 `type:"webauthn.get"` 的 clientData；TEE 侧走 getAssertion
 - 响应 = `{clientDataJSON, authenticatorData, signature, userHandle}`
 - **`signature = ES256(authData ‖ SHA-256(clientDataJSON))`** ——因此 origin 改写必须发生在
-  **进 TEE 之前**（FuckMiuiPasswords 的 ClientDataFixHook 即为此设计：签名/响应/服务端校验三者一致；
-  X 真实登录实测通过）
-- `userHandle` = 注册时的 user.id（Telegram 借此编 `datacenterId:userId` 做跨 DC 登录路由）
+  **进 TEE 之前**（FuckMiuiPasswords 的 ClientDataFixHook 即为此设计：签名/响应/服务端校验三者一致）
+- `userHandle` = 注册时的 user.id（Telegram 借此编 `datacenterId:userId` 做跨 DC 登录路由；
+  X 等 RP 登录校验同样要求它）
 - 服务端校验：challenge 匹配、type=webauthn.get、rpIdHash、UP/UV、**ES256 验签**、signCount 递增
+
+### 6.1 userHandle 陷阱（★关卡三：MiFido 自抹）
+
+TEE 的 getAssertion 响应**本来就带 user**（CBOR key 4 = `{id, displayName, name}`），
+但 `b2/j.N`（PasskeyAuthenticator.setUserSelected，日志锚
+`setUserSelected isDiscoverCredential:`）在**非 discoverable（allowList）断言**里执行
+`d0.d = null` 后把响应重新序列化——严格照 CTAP2「allowList 断言不带 user」语义。
+随后 `o2/j.d` 重解析的就是这份被抹过的字节，`c3/a.c()` 组 JSON 时 userHandle 整个缺席。
+
+- 创建响应本就没有 userHandle 字段 → **创建能过**
+- 登录断言缺 userHandle → **RP 服务端直接拒**（2026-11-24 X 实测：指纹验证后报错）
+- discoverable 流程（无 allowList，如 PasskeyDemo）不抹——所以早期样本带 userHandle
+- userHandle **不在 TEE 签名覆盖内**（签名只盖 authData‖clientDataHash），补回安全
+
+FuckMiuiPasswords 的 `UserHandleFixHook` 把 `isDiscoverCredential` 翻成 true，
+走「保留 user + userSelected=true」分支（userSelected 全下游无人消费，零副作用）。
+修复后 X 登录实测通过（2026-11-24）。
 
 真实认证样本（PasskeyDemo 实测，服务端五项校验全绿）：
 
@@ -164,9 +187,10 @@ flags：创建 0x45 = UP|UV|AT；认证 0x05 = UP|UV
 | `com.miui.passwords` | Provider 入口 + FidoCredentialActivity + setResult 回传 | 仅排障 dump（三轮实测零功能贡献）|
 | `com.miui.cloudservice` | passkeeper/keybox（本地 TA + E2EE 云同步）| 无（无服务端门槛）|
 
-## 8. 两道关卡速查
+## 8. 三道关卡速查
 
 | 关卡 | 表现 | 根因 | FuckMiuiPasswords 对策 |
 |---|---|---|---|
-| ★一 | `asset not support` | 小米服务端 (rp, packageName) 白名单未收录 | NetForge 伪造响应 + SHORT-CIRCUIT |
-| ★二 | `PASSKEY_ORIGIN_MISMATCH` | 各 RP 的 origin 白名单策略不同 | 按 RP 分组改写 origin（源级，TEE 前）|
+| ★一 | `asset not support` | 小米服务端 (rp, packageName) 白名单未收录（另比对签名指纹） | AssetlinkGate 本地闸门（assetlinks.json DAL 每次现查）+ NetForge 伪造响应 + SHORT-CIRCUIT |
+| ★二 | `PASSKEY_ORIGIN_MISMATCH`（历史） | 各 RP 的 origin 策略不同 | 按 RP 分组改写 origin（源级，TEE 前）——2026-11-24 实测 X/TG 均收 app 源，名单已空置 |
+| ★三 | 创建成功、登录报错（响应无 userHandle） | MiFido setUserSelected 在非 discoverable 断言自抹 user | UserHandleFixHook（isDiscoverCredential 翻 true 保住 user，§6.1）|
