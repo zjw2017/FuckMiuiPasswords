@@ -32,8 +32,7 @@ import java.util.Map;
  * 裁决与服务端报错一一对应：不在声明里 → asset_not_support；在声明里但指纹
  * 不符 → fingerprints not match。拒绝时伪造忠实失败体，上游 p2.e 抛原生的
  * "vendor validate failed : message=…。serialNo=…"，与真机拒批行为一致。
- * 浏览器流（namespace=web）比对声明里的 web 条目（namespace=web +
- * site=https://&lt;rpId&gt; + get_login_creds，网站认自己的源）。
+ * 浏览器流（namespace=web）无条件放行（web 源由 RP 自验，见 evaluate 注释）。
  * <p>
  * 两层执行点共用本闸门：{@link NetForge}（网络层，解析 POST 表单）与
  * VendorValidateHook（短路层，直取 p2.e.a 入参）。模式见
@@ -105,37 +104,11 @@ public final class AssetlinkGate {
     private static int evaluate(String rp, String pkg, String fp,
                                 String assetlinkUrlListJson, boolean isBrowser) {
         if (rp == null || rp.isEmpty()) return DENY_UNLISTED;
-        // 浏览器流（namespace=web）比对声明里的 web 条目——网站认自己的源
-        if (isBrowser) return webDalCheck(rp, assetlinkUrlListJson);
+        // 浏览器流（namespace=web）无条件放行——web 源由框架按 rpId 生成、RP 服务端
+        // 自验，闸门无从核验（绝大多数站点不发 web 条目）。
+        if (isBrowser) return PASS;
         if (pkg == null || pkg.isEmpty()) return DENY_UNLISTED;
         return dalCheck(rp, pkg, fp, assetlinkUrlListJson);
-    }
-
-    /**
-     * 浏览器流的 DAL 比对：声明里找 namespace=web + site=https://&lt;rpId&gt; +
-     * get_login_creds 条目；web 条目无指纹，故只有 PASS / NOT-IN-DECLARATION 两种裁决。
-     */
-    private static int webDalCheck(String rp, String assetlinkUrlListJson) {
-        for (String url : declarationUrls(rp, assetlinkUrlListJson)) {
-            JSONArray arr = declarations(url);
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject entry = arr.optJSONObject(i);
-                if (entry == null) continue;
-                if (!arrayContains(entry.optJSONArray("relation"), REL_LOGIN_CREDS)) continue;
-                JSONObject target = entry.optJSONObject("target");
-                if (target == null || !"web".equals(target.optString("namespace"))) continue;
-                if (siteMatches(target.optString("site", null), rp)) return PASS;
-            }
-        }
-        return DENY_UNLISTED;
-    }
-
-    /** 声明的 site 是否就是 rp 的 https 源（忽略尾斜杠与大小写） */
-    private static boolean siteMatches(String declaredSite, String rp) {
-        if (declaredSite == null) return false;
-        String s = declaredSite.trim();
-        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
-        return s.equalsIgnoreCase("https://" + rp);
     }
 
     /** 抓 assetlinks.json 做标准 DAL 比对（声明抓取经 {@link #declarations}，每 URL 只抓一次） */
