@@ -22,11 +22,12 @@ import java.util.Map;
  * <p>
  * 小米服务端对 /pass/verify/assetlink 做两道检查——(rp, packageName) 注册库
  * + 调用方签名证书 SHA-256 比对（"fingerprints not match" 即第二道）。模块把
- * 核验搬到本地，伪造的 code:0 只发给过了闸门的调用方：<b>每次抓 RP 自己的
+ * 核验搬到本地，伪造的 code:0 只发给过了闸门的调用方：<b>抓 RP 自己的
  * assetlinks.json 按标准 DAL 语义比对</b>（relation 含
  * delegate_permission/common.get_login_creds + namespace=android_app +
  * package_name + sha256_cert_fingerprints，与 MiFido 本地路径 p2.a 同款语义）。
- * 无静态白名单——调用方换签名、RP 更新声明即自动跟上，零配置维护。
+ * 无静态白名单——调用方换签名自动跟上；声明每 URL 进程内只抓一次（declarations
+ * 缓存），RP 更新声明待 com.fido.asm 重启后跟上。
  * <p>
  * 裁决与服务端报错一一对应：不在声明里 → asset_not_support；在声明里但指纹
  * 不符 → fingerprints not match。拒绝时伪造忠实失败体，上游 p2.e 抛原生的
@@ -50,6 +51,9 @@ public final class AssetlinkGate {
     private static final String REL_LOGIN_CREDS = "delegate_permission/common.get_login_creds";
     private static final int DAL_FETCH_TIMEOUT_MS = 5_000;
     private static final int DAL_MAX_BYTES = 65_536;
+
+    /** 声明抓取缓存：URL → 已解析条目（空表 = 抓到但解析失败）。见 {@link #declarations} */
+    private static final Map<String, JSONArray> DECL_CACHE = new HashMap<>();
 
     /** 伪造响应入口：解析表单 → 裁决 → 通过体 / 忠实失败体（log 模式下裁决为拒也给通过体） */
     public static String forgeResponse(String formBody) {
@@ -113,20 +117,14 @@ public final class AssetlinkGate {
      */
     private static int webDalCheck(String rp, String assetlinkUrlListJson) {
         for (String url : declarationUrls(rp, assetlinkUrlListJson)) {
-            String doc = httpGet(url);
-            if (doc == null) continue;
-            try {
-                JSONArray arr = new JSONArray(doc);
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject entry = arr.optJSONObject(i);
-                    if (entry == null) continue;
-                    if (!arrayContains(entry.optJSONArray("relation"), REL_LOGIN_CREDS)) continue;
-                    JSONObject target = entry.optJSONObject("target");
-                    if (target == null || !"web".equals(target.optString("namespace"))) continue;
-                    if (siteMatches(target.optString("site", null), rp)) return PASS;
-                }
-            } catch (Throwable t) {
-                Log.w("GATE dal parse err " + url + ": " + t);
+            JSONArray arr = declarations(url);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject entry = arr.optJSONObject(i);
+                if (entry == null) continue;
+                if (!arrayContains(entry.optJSONArray("relation"), REL_LOGIN_CREDS)) continue;
+                JSONObject target = entry.optJSONObject("target");
+                if (target == null || !"web".equals(target.optString("namespace"))) continue;
+                if (siteMatches(target.optString("site", null), rp)) return PASS;
             }
         }
         return DENY_UNLISTED;
@@ -140,39 +138,58 @@ public final class AssetlinkGate {
         return s.equalsIgnoreCase("https://" + rp);
     }
 
-    /** 抓 assetlinks.json 做标准 DAL 比对（每次现查） */
+    /** 抓 assetlinks.json 做标准 DAL 比对（声明抓取经 {@link #declarations}，每 URL 只抓一次） */
     private static int dalCheck(String rp, String pkg, String fp, String assetlinkUrlListJson) {
         int verdict = DENY_UNLISTED;
         boolean pkgSeen = false;
         for (String url : declarationUrls(rp, assetlinkUrlListJson)) {
-            String doc = httpGet(url);
-            if (doc == null) continue;
-            try {
-                JSONArray arr = new JSONArray(doc);
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject entry = arr.optJSONObject(i);
-                    if (entry == null) continue;
-                    if (!arrayContains(entry.optJSONArray("relation"), REL_LOGIN_CREDS)) continue;
-                    JSONObject target = entry.optJSONObject("target");
-                    if (target == null || !"android_app".equals(target.optString("namespace"))) continue;
-                    if (!pkg.equals(target.optString("package_name"))) continue;
-                    pkgSeen = true;
-                    JSONArray fps = target.optJSONArray("sha256_cert_fingerprints");
-                    for (int k = 0; fps != null && k < fps.length(); k++) {
-                        if (fpEquals(fps.optString(k, null), fp)) {
-                            verdict = PASS;
-                            break;
-                        }
+            JSONArray arr = declarations(url);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject entry = arr.optJSONObject(i);
+                if (entry == null) continue;
+                if (!arrayContains(entry.optJSONArray("relation"), REL_LOGIN_CREDS)) continue;
+                JSONObject target = entry.optJSONObject("target");
+                if (target == null || !"android_app".equals(target.optString("namespace"))) continue;
+                if (!pkg.equals(target.optString("package_name"))) continue;
+                pkgSeen = true;
+                JSONArray fps = target.optJSONArray("sha256_cert_fingerprints");
+                for (int k = 0; fps != null && k < fps.length(); k++) {
+                    if (fpEquals(fps.optString(k, null), fp)) {
+                        verdict = PASS;
+                        break;
                     }
-                    if (verdict == PASS) break;
                 }
-            } catch (Throwable t) {
-                Log.w("GATE dal parse err " + url + ": " + t);
+                if (verdict == PASS) break;
             }
             if (verdict == PASS) break;
         }
         if (verdict != PASS && pkgSeen) verdict = DENY_FINGERPRINT;
         return verdict;
+    }
+
+    /**
+     * 声明抓取缓存：每个 assetlink URL <b>进程内只抓一次</b>——同一次凭据操作里
+     * 闸门判两遍（短路层 + 网络层）不再重复联网，后续操作直接复用。
+     * 解析失败缓存空表（解析告警只报一次）；网络失败不缓存、下次重试。
+     * 代价：RP 更新声明要等 com.fido.asm 重启才跟上。
+     */
+    private static JSONArray declarations(String url) {
+        synchronized (DECL_CACHE) {
+            JSONArray cached = DECL_CACHE.get(url);
+            if (cached != null) return cached;
+        }
+        JSONArray arr = new JSONArray();
+        String doc = httpGet(url);
+        if (doc == null) return arr;      // 网络失败不缓存，下次重试
+        try {
+            arr = new JSONArray(doc);
+        } catch (Throwable t) {
+            Log.w("GATE dal parse err " + url + ": " + t);
+        }
+        synchronized (DECL_CACHE) {
+            DECL_CACHE.put(url, arr);
+        }
+        return arr;
     }
 
     /**

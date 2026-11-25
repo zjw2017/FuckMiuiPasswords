@@ -61,7 +61,7 @@ public final class Config {
      * 看 GATE 行确认各调用方都能过 DAL，再改 "enforce"。
      * "off" = 无条件 code:0（谁都能借道，慎用）。
      */
-    public static final String ASSETLINK_GATE_MODE = GATE_MODE_LOG;
+    public static final String ASSETLINK_GATE_MODE = GATE_MODE_ENFORCE;
 
     /** 短路定位常量串（p2.e.a 抛异常的 format 模板前缀） */
     public static final String VALIDATOR_NEEDLE = "vendor validate failed";
