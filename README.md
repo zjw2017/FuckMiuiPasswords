@@ -62,7 +62,8 @@ j()/g() 封装机器，与密码同层同钥匙栈、模块零密钥）——服
 **每次抓 RP 的 assetlinks.json 按标准 DAL 语义比对**（get_login_creds +
 android_app + 包名 + 指纹），无静态白名单——调用方换签名、RP 更新声明自动
 跟上，零配置维护。声明 URL 只采信 rp 域名内（含子域），防调用方塞私有 URL
-伪造声明；浏览器流（web namespace）无 android_app 声明可比，不放行。
+伪造声明；浏览器流（web namespace）比对声明里的 **web 条目**（site=`https://<rpId>`
+\+ get_login_creds，网站认自己的源，x.com 有、telegram.org 无）。
 
 拒绝时伪造忠实失败体（asset_not_support / fingerprints not match），上游抛原生
 `vendor validate failed : message=…serialNo=…`，与真机拒批行为一致。

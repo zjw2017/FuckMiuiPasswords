@@ -31,7 +31,8 @@ import java.util.Map;
  * 裁决与服务端报错一一对应：不在声明里 → asset_not_support；在声明里但指纹
  * 不符 → fingerprints not match。拒绝时伪造忠实失败体，上游 p2.e 抛原生的
  * "vendor validate failed : message=…。serialNo=…"，与真机拒批行为一致。
- * 浏览器流（namespace=web）没有 android_app 声明可比、无核验依据，不放行。
+ * 浏览器流（namespace=web）比对声明里的 web 条目（namespace=web +
+ * site=https://&lt;rpId&gt; + get_login_creds，网站认自己的源）。
  * <p>
  * 两层执行点共用本闸门：{@link NetForge}（网络层，解析 POST 表单）与
  * VendorValidateHook（短路层，直取 p2.e.a 入参）。模式见
@@ -50,7 +51,7 @@ public final class AssetlinkGate {
     private static final int DAL_FETCH_TIMEOUT_MS = 5_000;
     private static final int DAL_MAX_BYTES = 65_536;
 
-    /** 伪造响应入口：解析表单 → 裁决 → 通过体 / 忠实失败体 */
+    /** 伪造响应入口：解析表单 → 裁决 → 通过体 / 忠实失败体（log 模式下裁决为拒也给通过体） */
     public static String forgeResponse(String formBody) {
         Map<String, String> f = parseForm(formBody);
         String rp = f.get("rp");
@@ -58,27 +59,40 @@ public final class AssetlinkGate {
         String fp = f.get("fingerprints");
         boolean isBrowser = "web".equals(f.get("namespace"));
         int verdict = check(rp, pkg, fp, f.get("assetlinkUrlList"), isBrowser);
-        return verdict == PASS ? Config.FORGED_ASSETLINK_BODY : denyBody(verdict, pkg);
+        return (verdict == PASS || !isEnforced()) ? Config.FORGED_ASSETLINK_BODY : denyBody(verdict, pkg);
+    }
+
+    /** enforce 模式下拒绝才真正执行；off/log 模式一律放行 */
+    public static boolean isEnforced() {
+        return Config.GATE_MODE_ENFORCE.equals(Config.ASSETLINK_GATE_MODE);
+    }
+
+    /** 裁决名（日志用） */
+    public static String verdictName(int verdict) {
+        if (verdict == DENY_FINGERPRINT) return "FINGERPRINT-MISMATCH";
+        if (verdict == DENY_UNLISTED) return "NOT-IN-DECLARATION";
+        return "PASS";
     }
 
     /**
-     * 闸门裁决。mode=off 直接过；mode=log 算出裁决只记日志仍放行（收集指纹）；
-     * mode=enforce 时拒绝原样返回，调用方据此走失败路径。
+     * 闸门裁决，返回<b>真实裁决</b>（PASS / DENY_*），模式不折进返回值：
+     * mode=off 不评估直接 PASS；mode=log 只记日志，放行与否由调用方按
+     * {@link #isEnforced()} 决定（false = 一律放行）；mode=enforce 时
+     * 调用方据裁决走失败路径。
      */
     public static int check(String rp, String pkg, String fp,
                             String assetlinkUrlListJson, boolean isBrowser) {
         if (Config.GATE_MODE_OFF.equals(Config.ASSETLINK_GATE_MODE)) return PASS;
         int verdict = evaluate(rp, pkg, fp, assetlinkUrlListJson, isBrowser);
-        boolean enforce = Config.GATE_MODE_ENFORCE.equals(Config.ASSETLINK_GATE_MODE);
         if (verdict == PASS) {
             Log.i("GATE PASS rp=" + rp + " pkg=" + pkg);
-            return PASS;
+        } else {
+            // 拒绝：日志给出裁决与调用方三元组（排障用）
+            Log.i("GATE " + verdictName(verdict)
+                    + " rp=" + rp + " pkg=" + pkg + " fp=" + fp
+                    + (isEnforced() ? " -> DENY" : " -> 放行(log 模式)"));
         }
-        // 拒绝：日志给出裁决与调用方三元组（排障用）
-        Log.i("GATE " + (verdict == DENY_FINGERPRINT ? "FINGERPRINT-MISMATCH" : "NOT-IN-DECLARATION")
-                + " rp=" + rp + " pkg=" + pkg + " fp=" + fp
-                + (enforce ? " -> DENY" : " -> 放行(log 模式)"));
-        return enforce ? verdict : PASS;
+        return verdict;
     }
 
     // ------------------------------------------------------------------
@@ -86,10 +100,44 @@ public final class AssetlinkGate {
     /** 真实裁决：DAL 实时核验（每次现查，无静态白名单） */
     private static int evaluate(String rp, String pkg, String fp,
                                 String assetlinkUrlListJson, boolean isBrowser) {
-        if (rp == null || pkg == null || rp.isEmpty() || pkg.isEmpty()) return DENY_UNLISTED;
-        // 浏览器流没有 android_app 声明可比，无核验依据不放行
-        if (isBrowser) return DENY_UNLISTED;
+        if (rp == null || rp.isEmpty()) return DENY_UNLISTED;
+        // 浏览器流（namespace=web）比对声明里的 web 条目——网站认自己的源
+        if (isBrowser) return webDalCheck(rp, assetlinkUrlListJson);
+        if (pkg == null || pkg.isEmpty()) return DENY_UNLISTED;
         return dalCheck(rp, pkg, fp, assetlinkUrlListJson);
+    }
+
+    /**
+     * 浏览器流的 DAL 比对：声明里找 namespace=web + site=https://&lt;rpId&gt; +
+     * get_login_creds 条目；web 条目无指纹，故只有 PASS / NOT-IN-DECLARATION 两种裁决。
+     */
+    private static int webDalCheck(String rp, String assetlinkUrlListJson) {
+        for (String url : declarationUrls(rp, assetlinkUrlListJson)) {
+            String doc = httpGet(url);
+            if (doc == null) continue;
+            try {
+                JSONArray arr = new JSONArray(doc);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject entry = arr.optJSONObject(i);
+                    if (entry == null) continue;
+                    if (!arrayContains(entry.optJSONArray("relation"), REL_LOGIN_CREDS)) continue;
+                    JSONObject target = entry.optJSONObject("target");
+                    if (target == null || !"web".equals(target.optString("namespace"))) continue;
+                    if (siteMatches(target.optString("site", null), rp)) return PASS;
+                }
+            } catch (Throwable t) {
+                Log.w("GATE dal parse err " + url + ": " + t);
+            }
+        }
+        return DENY_UNLISTED;
+    }
+
+    /** 声明的 site 是否就是 rp 的 https 源（忽略尾斜杠与大小写） */
+    private static boolean siteMatches(String declaredSite, String rp) {
+        if (declaredSite == null) return false;
+        String s = declaredSite.trim();
+        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+        return s.equalsIgnoreCase("https://" + rp);
     }
 
     /** 抓 assetlinks.json 做标准 DAL 比对（每次现查） */
