@@ -39,9 +39,11 @@ public final class VendorValidateHook extends AbsHook {
         }
         boolean isBrowser = getArg(3) instanceof Boolean && (Boolean) getArg(3);
         int verdict = AssetlinkGate.check(rp, pkg, fp, null, isBrowser);
-        if (verdict == AssetlinkGate.PASS) {
+        if (verdict == AssetlinkGate.PASS || !AssetlinkGate.isEnforced()) {
             setResult(null);
-            Log.i("SHORT-CIRCUIT vendor validate [gate PASS] rp=" + rp + " pkg=" + pkg);
+            // [gate X] 是真实裁决；非 PASS 时注明是 log 模式放行（勿误读为判定通过）
+            Log.i("SHORT-CIRCUIT vendor validate [gate " + AssetlinkGate.verdictName(verdict)
+                    + (verdict == AssetlinkGate.PASS ? "" : "->log放行") + "] rp=" + rp + " pkg=" + pkg);
         } else {
             // 不短路：原方法 POST → NetForge 闸门伪造拒绝 → 原生失败异常
             Log.i("GATE DENY -> 走原生失败路径 rp=" + rp + " pkg=" + pkg + " fp=" + fp);
